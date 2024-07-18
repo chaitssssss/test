@@ -10,7 +10,7 @@ region = os.environ.get("AWS_REGION")
 current_dir = os.getcwd()
 print(current_dir)
 file_path = os.path.join(current_dir, 'config.yaml')
-#file_path = '/Users/kchaitan/Desktop/SENGRID_API_INTEGRATION/config.yaml'
+
 
 
 def load_yaml(path):
@@ -35,7 +35,7 @@ def get_other_groups_in_job_group(data,group_name):
 def query_dynamo_db_job_status(table_name,job_id):
     dynamodb_con = boto3.resource("dynamodb",region_name=region)
     table = dynamodb_con.table('job_status_table')
-    key_condition_expression = Key('job_id').eq('value')
+    key_condition_expression = Key('job_id').eq(job_id)
 
     # Perform the query
     response = table.query(
