@@ -1,83 +1,63 @@
 import pytest
-from unittest.mock import patch, MagicMock,mock_open
-from lambda_handler import lambda_handler, load_yaml, get_other_groups_in_job_group, query_dynamo_db_job_status
+from unittest.mock import MagicMock, patch
+import boto3
+from src.lambda_handler import lambda_handler, load_yaml, get_mandatory_job_groups, query_dynamo_db_job_status, check_mandatory_jobs_success
 
-@pytest.fixture
-def mock_event():
-    return {
-        "Records": [
-            {
-                "dynamodb": {
-                    "Keys": {
-                        "job_id": {"S": "group1-20230701"},
-                        "job_start_utc_timestamp": {"N": "1685635200"}
-                    },
-                    "NewImage": {
-                        "job_status": {"S": "SUCCESS"},
-                        "job_end_utc_timestamp": {"N": "1685635300"},
-                        "failure_message": {"S": ""},
-                        "is_failed_job_retryable": {"BOOL": False},
-                        "data_s3_paths_associated": {"L": [{"S": "s3://bucket/path1"}, {"S": "s3://bucket/path2"}]}
-                    }
-                }
-            },
-            {
-                "dynamodb": {
-                    "Keys": {
-                        "job_id": {"S": "group2-20230701"},
-                        "job_start_utc_timestamp": {"N": "1685635400"}
-                    },
-                    "NewImage": {
-                        "job_status": {"S": "FAIL"},
-                        "job_end_utc_timestamp": {"N": "1685635500"},
-                        "failure_message": {"S": "Job failed"},
-                        "is_failed_job_retryable": {"BOOL": True},
-                        "data_s3_paths_associated": {"L": [{"S": "s3://bucket/path3"}, {"S": "s3://bucket/path4"}]}
+def test_load_yaml(monkeypatch):
+    mock_yaml_data = {
+        'QA': {
+            'JOB_GROUP_MANDATORY': {
+                'IS_MANDATORY': True,
+                'GROUP_1': {
+                    'DATASETS': {
+                        'alexendria_feature_library_group_77': {'ID': '1234567'},
+                        'alexendria_feature_library_group_2032': {'ID': '891010'}
                     }
                 }
             }
-        ]
+        }
     }
+    monkeypatch.setattr('builtins.open', lambda *args, **kwargs: MagicMock(return_value=mock_yaml_data))
+    data = load_yaml('config.yaml')
+    assert data == mock_yaml_data
 
-def test_lambda_handler_success(mock_event):
-    with patch('lambda_handler.load_yaml', return_value={'QA': {'group1': ['group1', 'group2'], 'group2': ['group1', 'group2']}}), \
-         patch('lambda_handler.query_dynamo_db_job_status', return_value={'Items': [{'job_status': 'success'}]}):
-        lambda_handler(mock_event, None)
-
-def test_lambda_handler_fail(mock_event):
-    mock_event['Records'][0]['dynamodb']['NewImage']['job_status'] = {'S': 'FAIL'}
-    with patch('lambda_handler.load_yaml', return_value={'QA': {'group1': ['group1', 'group2'], 'group2': ['group1', 'group2']}}):
-        lambda_handler(mock_event, None)
-
-def test_lambda_handler_in_progress(mock_event):
-    mock_event['Records'][0]['dynamodb']['NewImage']['job_status'] = {'S': 'IN_PROGRESS'}
-    lambda_handler(mock_event, None)
-
-def test_lambda_handler_empty_records(mock_event):
-    mock_event['Records'] = []
-    with pytest.raises(ValueError) as exc:
-        lambda_handler(mock_event, None)
-    assert str(exc.value) == "Event contains empty 'Records'"
-
-def test_lambda_handler_no_records(mock_event):
-    del mock_event['Records']
-    with pytest.raises(ValueError) as exc:
-        lambda_handler(mock_event, None)
-    assert str(exc.value) == "Event does not contain 'Records'"
-
-def test_load_yaml():
-    with patch('builtins.open', mock_open(read_data='{"QA": {"group1": ["group1", "group2"], "group2": ["group1", "group2"]}}')) as mock_file:
-        data = load_yaml('/path/to/config.yaml')
-        assert data == {'QA': {'group1': ['group1', 'group2'], 'group2': ['group1', 'group2']}}
-
-def test_get_other_groups_in_job_group():
-    data = {'QA': {'group1': ['group1', 'group2'], 'group2': ['group1', 'group2']}}
-    other_groups = get_other_groups_in_job_group(data, 'group1')
-    assert other_groups == ['group2']
+def test_get_mandatory_job_groups():
+    config_data = {
+        'QA': {
+            'JOB_GROUP_MANDATORY': {
+                'IS_MANDATORY': True,
+                'GROUP_1': {
+                    'DATASETS': {
+                        'alexendria_feature_library_group_77': {'ID': '1234567'},
+                        'alexendria_feature_library_group_2032': {'ID': '891010'}
+                    }
+                }
+            }
+        }
+    }
+    job_groups = get_mandatory_job_groups(config_data)
+    assert job_groups == ['GROUP_1']
 
 def test_query_dynamo_db_job_status(monkeypatch):
     mock_table = MagicMock()
-    mock_table.query.return_value = {'Items': [{'job_status': 'success'}]}
-    monkeypatch.setattr('lambda_handler.boto3.resource', lambda x, region_name=None: MagicMock(table=lambda y: mock_table))
-    response = query_dynamo_db_job_status('job_status_table', 'job-id-1')
-    assert response == {'Items': [{'job_status': 'success'}]}
+    mock_table.query.return_value = {'Items': [{'job_status': 'SUCCESS'}]}
+    mock_dynamodb_resource = MagicMock()
+    mock_dynamodb_resource.Table.return_value = mock_table
+    monkeypatch.setattr(boto3, 'resource', lambda *args, **kwargs: mock_dynamodb_resource)
+    response = query_dynamo_db_job_status('job_status_table', 'GROUP_1-2024-07-27')
+    assert response == {'Items': [{'job_status': 'SUCCESS'}]}
+
+def test_check_mandatory_jobs_success(monkeypatch):
+    mock_table = MagicMock()
+    mock_table.query.return_value = {'Items': [{'job_status': 'SUCCESS'}]}
+    mock_dynamodb_resource = MagicMock()
+    mock_dynamodb_resource.Table.return_value = mock_table
+    monkeypatch.setattr(boto3, 'resource', lambda *args, **kwargs: mock_dynamodb_resource)
+    
+    mandatory_job_groups = ['GROUP_1']
+    all_successful, responses = check_mandatory_jobs_success(mandatory_job_groups)
+    
+    assert all_successful
+    assert responses == {
+        'GROUP_1-2024-07-27': [{'job_status': 'SUCCESS'}]
+    }
