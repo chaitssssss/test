@@ -1,31 +1,24 @@
-import urllib3
-
-def send_alert_to_pagerduty(event):
-    integration_key = 'YOUR_PAGERDUTY_INTEGRATION_KEY'
-    url = 'https://events.pagerduty.com/v2/enqueue'
+@patch('src.lambda_handler.load_yaml')
+@patch('src.lambda_handler.check_mandatory_jobs_success')
+def test_lambda_handler_success(mock_check_mandatory_jobs_success, mock_load_yaml):
+    mock_load_yaml.return_value = config_data
+    mock_check_mandatory_jobs_success.return_value = (True, {})
     
-    headers = {
-        'Content-Type': 'application/json',
-    }
+    event = {}
+    context = {}
+    response = lambda_handler(event, context)
+assert response['statusCode'] == 200
+    body = json.loads(response['body'])
+    assert body['status'] == 'success'
 
-    payload = {
-        "routing_key": integration_key,
-        "event_action": "trigger",
-        "payload": {
-            "summary": "Example alert from AWS Lambda",
-            "severity": "error",
-            "source": "AWS Lambda",
-            "component": "Lambda Function",
-            "custom_details": {
-                "error": str(event)  # Add relevant event details
-            }
-        }
-    }
-
-    http = urllib3.PoolManager()
-    response = http.request('POST', url, body=json.dumps(payload), headers=headers)
-
-    return {
-        'statusCode': response.status,
-        'body': response.data.decode('utf-8')  # Decode response for readability
-    }
+@patch('src.lambda_handler.load_yaml')
+@patch('src.lambda_handler.check_mandatory_jobs_success')
+def test_lambda_handler_failure(mock_check_mandatory_jobs_success, mock_load_yaml):
+    mock_load_yaml.return_value = config_data
+    mock_check_mandatory_jobs_success.return_value = (False, {})
+event = {}
+    context = {}
+    response = lambda_handler(event, context)
+assert response['statusCode'] == 200
+    body = json.loads(response['body'])
+    assert body['status'] == 'fail'
