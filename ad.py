@@ -15,8 +15,8 @@ def check_optional_jobs_status(optional_job_groups):
         today_date = datetime.today().date()
         datetime_obj = datetime.combine(today_date, time_obj)
         utc_timezone = pytz.UTC
-        datetime_with_tz = utc_timezone.localize(datetime_obj)
-        now = datetime.utcnow().time()
+        datetime_with_tz = datetime_obj.replace(tzinfo=ZoneInfo("UTC"))
+        now = datetime.now(ZoneInfo("UTC")).time()
 
         if now <= datetime_with_tz.time() and (len(response['Items']) == 0 or response['Items'][0]['job_status'] != 'SUCCESS'):
             all_successful = False
