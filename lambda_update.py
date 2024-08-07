@@ -1,3 +1,7 @@
+def load_yaml(path):
+    with open(path, 'r', encoding='utf-8') as file:
+        data = yaml.safe_load(file)
+        return data
 
 def get_job_groups(config_data):
     try:
@@ -24,64 +28,6 @@ def get_job_groups(config_data):
         raise e 
 
     return mandatory_job_groups, optional_job_groups, cut_off_time
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-cloudwatch = boto3.client('events', region_name=region)
-lambda_client = boto3.client('lambda', region_name=region)
-
-def load_yaml(path):
-    with open(path, 'r', encoding='utf-8') as file:
-        data = yaml.safe_load(file)
-        return data
-
-def get_job_groups(config_data):
-    try:
-        mandatory_job_groups = []
-        optional_job_groups = {}
-
-        # Extract mandatory job groups
-        job_groups = config_data['QA']['JOB_GROUP_MANDATORY']
-        for group, datasets in job_groups.items():
-            if group == 'IS_MANDATORY':
-                continue
-            mandatory_job_groups.append(group)
-
-        # Extract optional job groups
-        job_groups = config_data['QA']['JOB_GROUP_OPTIONAL']
-        for group, group_info in job_groups.items():
-            if group == 'IS_MANDATORY' or group == 'CUT_OFF_TIME':
-                continue
-            cut_off_time = job_groups.get('CUT_OFF_TIME')  # Get the cut-off time for all optional groups
-            optional_job_groups[group] = cut_off_time  # Assign the cut-off time to each group
-
-    except Exception as e:
-        print(e)
-        raise e 
-
-    return mandatory_job_groups, optional_job_groups
 
 def query_dynamo_db_job_status(table_name, job_id):
     dynamodb_con = boto3.resource("dynamodb", region_name=region)
@@ -169,7 +115,7 @@ def reschedule_lambda():
     current_time = datetime.utcnow()
     reschedule_time = current_time + timedelta(minutes=15)
     
-    rule_name = "ReschedulejobstatusLambdaRule"
+    rule_name = "RescheduleLambdaRule"
     lambda_arn = os.getenv('AWS_LAMBDA_FUNCTION_NAME')
 
     schedule_expression = f"cron({reschedule_time.minute} {reschedule_time.hour} * * ? *)"
@@ -193,7 +139,7 @@ def reschedule_lambda():
     )
 
 def cleanup_cloudwatch_rule():
-    rule_name = "RescheduleLambdaRule"
+    rule_name = "RescheduleJOBSTATUSLambdaRule"
     # Remove all targets from the rule
     cloudwatch.remove_targets(
         Rule=rule_name,
@@ -207,7 +153,7 @@ def cleanup_cloudwatch_rule():
 def lambda_handler(event, context):
     try:
         config_data = load_yaml(file_path)
-        mandatory_job_groups, optional_job_groups = get_job_groups(config_data)
+        mandatory_job_groups, optional_job_groups, cut_off_time_str = get_job_groups(config_data)
         
         all_mandatory_successful, mandatory_responses, failed_mandatory_jobs, yet_to_trigger_mandatory_jobs = check_mandatory_jobs_success(mandatory_job_groups)
         print("Mandatory jobs:", mandatory_responses)
@@ -232,7 +178,8 @@ def lambda_handler(event, context):
         }
 
         current_time = datetime.utcnow()
-        cut_off_time_str = optional_job_groups.get('CUT_OFF_TIME')
+
+        # Convert cut-off time to datetime object
         cut_off_time = datetime.strptime(cut_off_time_str.replace('ZUTC', ''), '%H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
 
         if all_mandatory_successful:
@@ -266,7 +213,7 @@ def lambda_handler(event, context):
 
         return {
             'statusCode': 200,
-            'body': response
+            'body':response
         }
     except Exception as e:
         print(e)
