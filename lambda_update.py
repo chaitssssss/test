@@ -1,4 +1,54 @@
 
+def get_job_groups(config_data):
+    try:
+        mandatory_job_groups = []
+        optional_job_groups = {}
+
+        # Extract mandatory job groups
+        job_groups = config_data['QA']['JOB_GROUP_MANDATORY']
+        for group, datasets in job_groups.items():
+            if group == 'IS_MANDATORY':
+                continue
+            mandatory_job_groups.append(group)
+
+        # Extract optional job groups and their common cut-off time
+        job_groups = config_data['QA']['JOB_GROUP_OPTIONAL']
+        cut_off_time = job_groups.get('CUT_OFF_TIME')  # Get the cut-off time for all optional groups
+        for group, group_info in job_groups.items():
+            if group == 'IS_MANDATORY' or group == 'CUT_OFF_TIME':
+                continue
+            optional_job_groups[group] = cut_off_time  # Assign the common cut-off time to each group
+
+    except Exception as e:
+        print(e)
+        raise e 
+
+    return mandatory_job_groups, optional_job_groups, cut_off_time
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 cloudwatch = boto3.client('events', region_name=region)
 lambda_client = boto3.client('lambda', region_name=region)
 
