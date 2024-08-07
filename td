@@ -1,33 +1,4 @@
 
-I have mandatory jobs which contains both account and customer and I also have optional jobs which only contains account at the moment. As per our previous conversations , there should be only input
-{
-        "job_name": "c-3po-cmd-batch-copy",
-        "job_id": f"publish_{datetime.now().strftime('%Y%m%d')}",
-        "job_start_utc_timestamp": start_ts,
-        "job_args": {
-            "--destination": "account|consumer",
-            "--skip_file_puller": "true"
-        }
-    }
- that I have to be passing for the group of mandatory jobs post checking their respective job status , currently my lambda code will check if all the mandatory and optional jobs are successful but my point is that we have both account and consumer level in mandatory job groups. How can we differentiate the account and consumer level jobs while passing the input to the step functio ?
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 Technical Description
 This AWS Lambda function is designed to validate the status of jobs listed in a DynamoDB table
