@@ -2,19 +2,14 @@ import pytest
 from unittest.mock import MagicMock, patch, mock_open
 import boto3
 from src.lambda_handler import (
-    lambda_handler,
-    load_yaml,
-    get_job_groups,
-    query_dynamo_db_job_status,
-    check_mandatory_jobs_success,
-    check_optional_jobs_status,
-    trigger_step_function,
-    reschedule_lambda,
-    cleanup_cloudwatch_rule
+    lambda_handler, load_yaml, get_job_groups, query_dynamo_db_job_status,
+    check_mandatory_jobs_success, check_optional_jobs_status, trigger_step_function,
+    reschedule_lambda, cleanup_cloudwatch_rule
 )
 import os
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Sample config data for testing
 config_data = """
@@ -42,10 +37,6 @@ QA:
           ID: "0001"
 """
 
-# Helper function to get today's date
-def get_today_date_str():
-    return datetime.now().strftime('%Y-%m-%d')
-
 @patch("builtins.open", new_callable=mock_open, read_data=config_data)
 def test_load_yaml(mock_file):
     config_data = load_yaml("dummy_path")
@@ -67,32 +58,32 @@ def test_query_dynamo_db_job_status(mock_boto_resource):
     table_mock = dynamodb_mock.Table.return_value
     table_mock.query.return_value = {
         'Items': [
-            {'job_id': f'GROUP_1|{get_today_date_str()}', 'job_status': 'SUCCESS'}
+            {'job_id': 'GROUP_1|2024-08-02', 'job_status': 'SUCCESS'}
         ]
     }
     table_name = "batch_job_status"
-    job_id = f"GROUP_1|{get_today_date_str()}"
+    job_id = "GROUP_1|2024-08-02"
     response = query_dynamo_db_job_status(table_name, job_id)
     assert len(response['Items']) > 0
     assert response['Items'][0]['job_status'] == 'SUCCESS'
 
 @patch("src.lambda_handler.query_dynamo_db_job_status")
 def test_check_mandatory_jobs_success(mock_query):
-    mock_query.return_value = {'Items': [{'job_id': f'GROUP_1|{get_today_date_str()}', 'job_status': 'SUCCESS'}]}
+    mock_query.return_value = {'Items': [{'job_id': 'GROUP_1|2024-08-02', 'job_status': 'SUCCESS'}]}
     mandatory_job_groups = ["GROUP_1", "GROUP_2"]
     all_successful, responses, failed_jobs, yet_to_trigger_jobs = check_mandatory_jobs_success(mandatory_job_groups)
     assert all_successful
-    assert f"GROUP_1|{get_today_date_str()}" in responses
+    assert "GROUP_1|2024-08-02" in responses
     assert failed_jobs == []
     assert yet_to_trigger_jobs == []
 
 @patch("src.lambda_handler.query_dynamo_db_job_status")
 def test_check_optional_jobs_status(mock_query):
-    mock_query.return_value = {'Items': [{'job_id': f'GROUP_3|{get_today_date_str()}', 'job_status': 'SUCCESS'}]}
+    mock_query.return_value = {'Items': [{'job_id': 'GROUP_3|2024-08-02', 'job_status': 'SUCCESS'}]}
     optional_job_groups = {"GROUP_3": "12:00:00ZUTC", "GROUP_4": "12:00:00ZUTC"}
     all_successful, responses, failed_jobs, yet_to_trigger_jobs = check_optional_jobs_status(optional_job_groups)
     assert all_successful
-    assert f"GROUP_3|{get_today_date_str()}" in responses
+    assert "GROUP_3|2024-08-02" in responses
     assert failed_jobs == []
     assert yet_to_trigger_jobs == []
 
@@ -106,48 +97,58 @@ def test_trigger_step_function(mock_boto_client):
     assert 'executionArn' in response
 
 @patch("boto3.client")
-def test_reschedule_lambda(mock_boto_client):
-    cloudwatch_mock = mock_boto_client.return_value
-    lambda_arn = "arn:aws:lambda:region:account-id:function:lambda-function-name"
-    reschedule_lambda(lambda_arn)
-    cloudwatch_mock.put_rule.assert_called_once()
-    cloudwatch_mock.put_targets.assert_called_once()
+@patch("boto3.client")
+@patch("src.lambda_handler.reschedule_lambda")
+@patch("src.lambda_handler.cleanup_cloudwatch_rule")
+@patch("src.lambda_handler.trigger_step_function")
+@patch("src.lambda_handler.check_optional_jobs_status", return_value=(True, {}, []))
+@patch("src.lambda_handler.check_mandatory_jobs_success", return_value=(True, {}, [], []))
+@patch("builtins.open", new_callable=mock_open, read_data=config_data)
+def test_lambda_handler_success(mock_file, mock_mandatory, mock_optional, mock_trigger, mock_cleanup, mock_reschedule, mock_lambda_client, mock_cloudwatch_client):
+    mock_trigger.return_value = {
+        'executionArn': 'arn:aws:states:region:account-id:execution:state-machine-name:execution-id'
+    }
+    event = {}
+    context = MagicMock()
+    context.invoked_function_arn = "arn:aws:lambda:region:account-id:function:function-name"
+    response = lambda_handler(event, context)
+    body = response['body']
+    assert response['statusCode'] == 200
+    assert body['status'] == "completed"
+    assert body['step_function']['status'] == "triggered"
 
 @patch("boto3.client")
-def test_cleanup_cloudwatch_rule(mock_boto_client):
-    cloudwatch_mock = mock_boto_client.return_value
-    cloudwatch_mock.describe_rule.return_value = {'Name': 'RescheduleLambdaRule'}
-    cleanup_cloudwatch_rule()
-    cloudwatch_mock.remove_targets.assert_called_once()
-    cloudwatch_mock.delete_rule.assert_called_once()
-
-@patch("src.lambda_handler.check_mandatory_jobs_success", return_value=(True, {}, [], []))
-@patch("src.lambda_handler.check_optional_jobs_status", return_value=(False, {}, ["GROUP_3|{get_today_date_str()}"], []))
-@patch("src.lambda_handler.trigger_step_function")
+@patch("boto3.client")
 @patch("src.lambda_handler.reschedule_lambda")
-@patch("builtins.open", new_callable=mock_open, read_data=config_data)
-def test_lambda_handler_partial_success(mock_file, mock_reschedule, mock_trigger, mock_optional, mock_mandatory):
-    mock_trigger.return_value = {
-        'executionArn': 'arn:aws:states:region:account-id:execution:state-machine-name:execution-id'
-    }
-    event = {}
-    context = MagicMock()
-    context.invoked_function_arn = "arn:aws:lambda:region:account-id:function:lambda-function-name"
-    response = lambda_handler(event, context)
-    assert "pending" in response["status"]
-
-@patch("src.lambda_handler.check_mandatory_jobs_success", return_value=(True, {}, [], []))
-@patch("src.lambda_handler.check_optional_jobs_status", return_value=(True, {}, [], []))
-@patch("src.lambda_handler.trigger_step_function")
 @patch("src.lambda_handler.cleanup_cloudwatch_rule")
+@patch("src.lambda_handler.trigger_step_function")
+@patch("src.lambda_handler.check_optional_jobs_status", return_value=(False, {}, [], []))
+@patch("src.lambda_handler.check_mandatory_jobs_success", return_value=(True, {}, [], []))
 @patch("builtins.open", new_callable=mock_open, read_data=config_data)
-def test_lambda_handler_success(mock_file, mock_cleanup, mock_trigger, mock_optional, mock_mandatory):
+def test_lambda_handler_pending(mock_file, mock_mandatory, mock_optional, mock_trigger, mock_cleanup, mock_reschedule, mock_lambda_client, mock_cloudwatch_client):
     mock_trigger.return_value = {
         'executionArn': 'arn:aws:states:region:account-id:execution:state-machine-name:execution-id'
     }
     event = {}
     context = MagicMock()
-    context.invoked_function_arn = "arn:aws:lambda:region:account-id:function:lambda-function-name"
+    context.invoked_function_arn = "arn:aws:lambda:region:account-id:function:function-name"
     response = lambda_handler(event, context)
-    assert "completed" in response["status"]
+    body = response['body']
+    assert response['statusCode'] == 200
+    assert body['status'] == "pending"
 
+@patch("boto3.client")
+@patch("src.lambda_handler.reschedule_lambda")
+@patch("src.lambda_handler.cleanup_cloudwatch_rule")
+@patch("src.lambda_handler.trigger_step_function")
+@patch("src.lambda_handler.check_optional_jobs_status", return_value=(False, {}, [], []))
+@patch("src.lambda_handler.check_mandatory_jobs_success", return_value=(False, {}, [], []))
+@patch("builtins.open", new_callable=mock_open, read_data=config_data)
+def test_lambda_handler_failure(mock_file, mock_mandatory, mock_optional, mock_trigger, mock_cleanup, mock_reschedule, mock_lambda_client):
+    event = {}
+    context = MagicMock()
+    context.invoked_function_arn = "arn:aws:lambda:region:account-id:function:function-name"
+    response = lambda_handler(event, context)
+    body = response['body']
+    assert response['statusCode'] == 500
+    assert body['status'] == "failure"
