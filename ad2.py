@@ -1,4 +1,4 @@
-@patch('lambda_function.boto3.client')
+@patch('src.lambda_handler.boto3.client')
 def test_cleanup_cloudwatch_rule(mock_boto_client):
     mock_cloudwatch = MagicMock()
     mock_boto_client.return_value = mock_cloudwatch
