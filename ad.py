@@ -1,4 +1,4 @@
-@patch("boto3.client")
+@patch("src.lambda_handler.boto3.client")
 def test_reschedule_lambda(mock_boto_client):
     # Create mock instances for CloudWatch and Lambda clients
     cloudwatch_mock = mock_boto_client.return_value
@@ -24,7 +24,7 @@ def test_reschedule_lambda(mock_boto_client):
     assert len(target_args['Targets']) == 1
     assert target_args['Targets'][0]['Arn'] == lambda_arn
     
-@patch("boto3.client")
+@patch("src.lambda_handler.boto3.client")
 def test_cleanup_cloudwatch_rule(mock_boto_client):
     # Mock CloudWatch client
     cloudwatch_mock = mock_boto_client.return_value
