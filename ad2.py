@@ -1,3 +1,41 @@
+def test_reschedule_lambda():
+    # Mock the dependencies
+    cloudwatch_mock = MagicMock()
+    lambda_client_mock = MagicMock()
+    region = "us-east-1"
+    lambda_arn = "arn:aws:lambda:us-east-1:123456789012:function:my-function"
+
+    # Simulate the get_policy method to raise ResourceNotFoundException
+    lambda_client_mock.get_policy.side_effect = lambda_client_mock.exceptions.ResourceNotFoundException(
+        "Policy not found"
+    )
+
+    # Call the function
+    reschedule_lambda(lambda_arn, cloudwatch_mock, lambda_client_mock, region)
+
+    # Assert that the CloudWatch put_rule was called once with the correct parameters
+    cloudwatch_mock.put_rule.assert_called_once()
+
+    # Assert that the CloudWatch put_targets was called once with the correct parameters
+    cloudwatch_mock.put_targets.assert_called_once()
+    
+    # Assert that add_permission was called once since the permission does not exist
+    lambda_client_mock.add_permission.assert_called_once_with(
+        FunctionName=lambda_arn,
+        StatementId='RescheduleLambdaPermission',
+        Action='lambda:InvokeFunction',
+        Principal='events.amazonaws.com',
+        SourceArn=f'arn:aws:events:{region}:592273541233:rule/RescheduleLambdaRule'
+    )
+
+    # Check that get_policy was called once
+    lambda_client_mock.get_policy.assert_called_once_with(FunctionName=lambda_arn)
+
+
+
+
+
+
 def test_cleanup_cloudwatch_rule_not_exist():
     # Mock the dependencies
     cloudwatch_mock = MagicMock()
