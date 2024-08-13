@@ -6,8 +6,23 @@ Feature: Job Listener Lambda Function
     Then the lambda runs with status "True"
     And the "step_function_triggered_status" will be True
 
-  Scenario: Some of the Mandatory jobs failed when the lambda is triggered based on the cron schedule
-    Given some of the "mandatory_jobs" are present in dynamo db with job_status as FAILED
-    When the lambda "job-listener-lambda-qa" ran as per the cron schedule
+  Scenario: Failed execution of the Lambda function
+    When the lambda "my_lambda_function" ran as per the cron schedule
     Then the lambda runs with status "False"
     And the "step_function_triggered_status" will be False
+
+  Scenario: Lambda function returns unexpected response structure
+    When the lambda "my_lambda_function" ran as per the cron schedule
+    Then the lambda runs with status "True"
+    And the response should have a valid structure
+
+  Scenario: Lambda function times out
+    When the lambda "my_lambda_function" ran as per the cron schedule
+    Then the lambda runs with status "False"
+    And the error message should indicate a timeout
+
+  Scenario: Lambda function returns an error message
+    When the lambda "my_lambda_function" ran as per the cron schedule
+    Then the lambda runs with status "False"
+    And the error message should be "An error occurred"
+
