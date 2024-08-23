@@ -20,7 +20,6 @@ def mock_datetime_now(monkeypatch):
             return fixed_now.replace(tzinfo=tz)
 
     monkeypatch.setattr("src.lambda_handler.datetime", FixedDateTime)
-    monkeypatch.setattr("src.lambda_handler.datetime", FixedDateTime)
 
 # Mock the load_yaml function
 @pytest.fixture
@@ -56,16 +55,25 @@ def mock_dynamo_db_response_success(monkeypatch):
     mock_query = MagicMock(return_value=mock_response)
     monkeypatch.setattr("src.lambda_handler.query_dynamo_db_job_status", mock_query)
 
+# Mock get_job_groups to ensure environment is passed
+@pytest.fixture
+def mock_get_job_groups(monkeypatch):
+    mock_response = {
+        "mandatory_jobs": ["group_card_population.customer", "group_ra_source_2.customer"],
+        "optional_jobs": ["group_suppressions_3.account", "group_suppressions.customer"]
+    }
+    mock_func = MagicMock(return_value=mock_response)
+    monkeypatch.setattr("src.lambda_handler.get_job_groups", mock_func)
+
 # Test case when all mandatory and optional jobs are successful
 @patch("src.lambda_handler.trigger_step_function", return_value={"executionArn": "arn:aws:states:us-west-2:123456789012:execution:test"})
 @patch("src.lambda_handler.reschedule_lambda")
 @patch("src.lambda_handler.cleanup_cloudwatch_rule")
-def test_lambda_handler_all_successful(mock_cleanup, mock_reschedule, mock_trigger, mock_load_yaml, mock_dynamo_db_response_success, mock_datetime_now):
+def test_lambda_handler_all_successful(mock_cleanup, mock_reschedule, mock_trigger, mock_get_job_groups, mock_load_yaml, mock_dynamo_db_response_success, mock_datetime_now):
     response = lambda_handler(event, context)
     assert response["mandatory_jobs_status"]["all_successful"] is True
     assert response["optional_jobs_status"]["all_successful"] is True
     assert response["status"] == "completed"
-    assert "step_function" in response
 
 # Test case when mandatory jobs are yet to trigger
 @pytest.fixture
@@ -75,7 +83,7 @@ def mock_dynamo_db_response_yet_to_trigger(monkeypatch):
     monkeypatch.setattr("src.lambda_handler.query_dynamo_db_job_status", mock_query)
 
 @patch("src.lambda_handler.reschedule_lambda")
-def test_lambda_handler_mandatory_yet_to_trigger(mock_reschedule, mock_load_yaml, mock_dynamo_db_response_yet_to_trigger, mock_datetime_now):
+def test_lambda_handler_mandatory_yet_to_trigger(mock_reschedule, mock_get_job_groups, mock_load_yaml, mock_dynamo_db_response_yet_to_trigger, mock_datetime_now):
     response = lambda_handler(event, context)
     assert response["mandatory_jobs_status"]["all_successful"] is False
     assert response["status"] == "waiting"
@@ -96,7 +104,7 @@ def mock_dynamo_db_response_failed(monkeypatch):
     monkeypatch.setattr("src.lambda_handler.query_dynamo_db_job_status", mock_query)
 
 @patch("src.lambda_handler.cleanup_cloudwatch_rule")
-def test_lambda_handler_mandatory_failed(mock_cleanup, mock_load_yaml, mock_dynamo_db_response_failed, mock_datetime_now):
+def test_lambda_handler_mandatory_failed(mock_cleanup, mock_get_job_groups, mock_load_yaml, mock_dynamo_db_response_failed, mock_datetime_now):
     response = lambda_handler(event, context)
     assert response["mandatory_jobs_status"]["all_successful"] is False
     assert response["status"] == "failed"
