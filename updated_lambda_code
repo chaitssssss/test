@@ -6,19 +6,14 @@ from zoneinfo import ZoneInfo
 from boto3.dynamodb.conditions import Key
 from datetime import datetime, timedelta
 
+# Initialize environment and AWS clients
 environment = os.getenv("ENV")
-region = os.environ.get("AWS_REGION")
+region = os.getenv("AWS_REGION")
 cloudwatch = boto3.client('events', region_name=region)
 lambda_client = boto3.client('lambda', region_name=region)
+dynamodb = boto3.resource("dynamodb", region_name=region)
 
-def get_config(environment):
-    if environment == 'prod':
-        publisher_job_name = 'voyager-etl-publisher'
-    else:
-        publisher_job_name = 'c-3po-cmd-batch-copy'
-    return publisher_job_name
-
-publisher_job_name = get_config(environment)
+# Load configuration
 current_dir = os.getcwd()
 file_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
 
@@ -27,72 +22,88 @@ def load_yaml(path):
         data = yaml.safe_load(file)
         return data
 
+# Get the job groups from the configuration
 def get_job_groups(config_data, environment):
     try:
-        mandatory_job_groups = {}
-        optional_job_groups = {}
-
-        # Extract mandatory job groups and their cut-off time
+        # Extract mandatory job groups
         job_groups = config_data[environment]['JOB_GROUP_MANDATORY']
-        cut_off_time = job_groups.get('CUT_OFF_TIME')
-        for group, group_info in job_groups.items():
-            if group == 'IS_MANDATORY' or group == 'CUT_OFF_TIME':
-                continue
-            mandatory_job_groups[group] = cut_off_time
+        mandatory_cut_off_time = job_groups.get('CUT_OFF_TIME')
+        mandatory_job_groups = [group for group in job_groups.keys() if group not in ['IS_MANDATORY', 'CUT_OFF_TIME']]
 
-        # Extract optional job groups and their cut-off time
+        # Extract optional job groups
         job_groups = config_data[environment]['JOB_GROUP_OPTIONAL']
-        cut_off_time = job_groups.get('CUT_OFF_TIME')
-        for group, group_info in job_groups.items():
-            if group == 'IS_MANDATORY' or group == 'CUT_OFF_TIME':
-                continue
-            optional_job_groups[group] = cut_off_time
-
+        optional_cut_off_time = job_groups.get('CUT_OFF_TIME')
+        optional_job_groups = {group: optional_cut_off_time for group in job_groups.keys() if group not in ['IS_MANDATORY', 'CUT_OFF_TIME']}
+        
     except Exception as e:
         print(e)
-        raise e 
+        raise e
 
-    return mandatory_job_groups, optional_job_groups
+    return mandatory_job_groups, optional_job_groups, mandatory_cut_off_time, optional_cut_off_time
 
+# Query DynamoDB for job status
 def query_dynamo_db_job_status(table_name, job_id):
-    dynamodb_con = boto3.resource("dynamodb", region_name=region)
-    table = dynamodb_con.Table(table_name)
+    table = dynamodb.Table(table_name)
     key_condition_expression = Key('job_id').eq(job_id)
-    response = table.query(
-        KeyConditionExpression=key_condition_expression
-    )
+    response = table.query(KeyConditionExpression=key_condition_expression)
     return response
 
-def check_jobs_status(job_groups, is_mandatory):
+# Check the status of mandatory job groups
+def check_mandatory_jobs_status(mandatory_job_groups, cut_off_time_str):
     all_successful = True
     responses = {}
     failed_jobs = []
     yet_to_trigger_jobs = []
     today_date_str = datetime.utcnow().strftime('%Y-%m-%d')
     
-    for group_name, cut_off_time_str in job_groups.items():
+    cut_off_time = datetime.strptime(cut_off_time_str.replace('ZUTC', ''), '%H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
+    
+    for group_name in mandatory_job_groups:
         job_id = f"{group_name}|{today_date_str}"
         response = query_dynamo_db_job_status('batch_job_status', job_id)
         responses[job_id] = response['Items']
-
-        time_str = cut_off_time_str.replace('ZUTC', '')
-        time_obj = datetime.strptime(time_str, '%H:%M:%S').time()
-        today_date = datetime.today().date()
-        datetime_obj = datetime.combine(today_date, time_obj)
-        datetime_with_tz = datetime_obj.replace(tzinfo=ZoneInfo("UTC"))
-        now = datetime.now(ZoneInfo("UTC")).time()
-
-        if now <= datetime_with_tz.time():
+        
+        now = datetime.now(ZoneInfo("UTC"))
+        
+        if now <= cut_off_time:
             if len(response['Items']) == 0:
                 yet_to_trigger_jobs.append(job_id)
                 all_successful = False
             elif response['Items'][0]['job_status'] != 'SUCCEEDED':
                 all_successful = False
                 failed_jobs.append(job_id)
-
+                
     return all_successful, responses, failed_jobs, yet_to_trigger_jobs
 
-def trigger_step_function(context):
+# Check the status of optional job groups
+def check_optional_jobs_status(optional_job_groups):
+    all_successful = True
+    responses = {}
+    failed_jobs = []
+    yet_to_trigger_jobs = []
+    today_date_str = datetime.utcnow().strftime('%Y-%m-%d')
+    
+    for group_name, cut_off_time_str in optional_job_groups.items():
+        job_id = f"{group_name}|{today_date_str}"
+        response = query_dynamo_db_job_status('batch_job_status', job_id)
+        responses[job_id] = response['Items']
+        
+        time_obj = datetime.strptime(cut_off_time_str.replace('ZUTC', ''), '%H:%M:%S').time()
+        cut_off_time = datetime.combine(datetime.today(), time_obj).replace(tzinfo=ZoneInfo("UTC"))
+        now = datetime.now(ZoneInfo("UTC"))
+        
+        if now <= cut_off_time:
+            if len(response['Items']) == 0:
+                yet_to_trigger_jobs.append(job_id)
+                all_successful = False
+            elif response['Items'][0]['job_status'] != 'SUCCEEDED':
+                all_successful = False
+                failed_jobs.append(job_id)
+                
+    return all_successful, responses, failed_jobs, yet_to_trigger_jobs
+
+# Trigger step function
+def trigger_step_function(context, publisher_job_name):
     client = boto3.client('stepfunctions', region_name=region)
     start_ts = int(datetime.utcnow().timestamp())
     input_data = {
@@ -108,17 +119,15 @@ def trigger_step_function(context):
         stateMachineArn=os.getenv("STEP_FUNCTION_ARN"),
         input=json.dumps(input_data)
     )
-    
     return response
 
+# Reschedule Lambda function
 def reschedule_lambda(lambda_arn, cloudwatch, lambda_client, region):
-    """Schedule a Lambda function to run 15 minutes later."""
     current_time = datetime.utcnow()
     reschedule_time = current_time + timedelta(minutes=15)
-    
     rule_name = "RescheduleLambdaRule"
     schedule_expression = f"cron({reschedule_time.minute} {reschedule_time.hour} * * ? *)"
-
+    
     cloudwatch.put_rule(
         Name=rule_name,
         ScheduleExpression=schedule_expression,
@@ -127,14 +136,9 @@ def reschedule_lambda(lambda_arn, cloudwatch, lambda_client, region):
     
     cloudwatch.put_targets(
         Rule=rule_name,
-        Targets=[
-            {
-                'Id': '1',
-                'Arn': lambda_arn
-            }
-        ]
+        Targets=[{'Id': '1', 'Arn': lambda_arn}]
     )
-
+    
     permission_exists = False
     try:
         policy = lambda_client.get_policy(FunctionName=lambda_arn)
@@ -145,43 +149,39 @@ def reschedule_lambda(lambda_arn, cloudwatch, lambda_client, region):
                 break
     except Exception:
         pass
-
+    
     if not permission_exists:
         lambda_client.add_permission(
             FunctionName=lambda_arn,
             StatementId='RescheduleLambdaPermission',
             Action='lambda:InvokeFunction',
             Principal='events.amazonaws.com',
-            SourceArn=f'arn:aws:events:{region}:592273541233:rule/{rule_name}'
+            SourceArn=f'arn:aws:events:{region}:123456789012:rule/{rule_name}'
         )
 
+# Cleanup CloudWatch rule
 def cleanup_cloudwatch_rule(cloudwatch):
-    """Clean up the CloudWatch rule."""
     rule_name = "RescheduleLambdaRule"
-    
     try:
         response = cloudwatch.describe_rule(Name=rule_name)
         if 'Name' in response and response['Name'] == rule_name:
-            cloudwatch.remove_targets(
-                Rule=rule_name,
-                Ids=['1']
-            )
-            cloudwatch.delete_rule(
-                Name=rule_name
-            )
-            print(f"CloudWatch rule '{rule_name}' removed successfully.")
+            cloudwatch.remove_targets(Rule=rule_name, Ids=['1'])
+            cloudwatch.delete_rule(Name=rule_name)
     except Exception:
         print(f"CloudWatch rule '{rule_name}' does not exist. Skipping cleanup.")
 
+# Lambda handler
 def lambda_handler(event, context):
     try:
         config_data = load_yaml(file_path)
-        mandatory_job_groups, optional_job_groups = get_job_groups(config_data, environment)
+        mandatory_job_groups, optional_job_groups, mandatory_cut_off_time, optional_cut_off_time = get_job_groups(config_data, environment)
         
-        all_mandatory_successful, mandatory_responses, failed_mandatory_jobs, yet_to_trigger_mandatory_jobs = check_jobs_status(mandatory_job_groups, is_mandatory=True)
+        # Check mandatory jobs status
+        all_mandatory_successful, mandatory_responses, failed_mandatory_jobs, yet_to_trigger_mandatory_jobs = check_mandatory_jobs_status(mandatory_job_groups, mandatory_cut_off_time)
         print("Mandatory jobs:", mandatory_responses)
         
-        all_optional_successful, optional_responses, failed_optional_jobs, yet_to_trigger_optional_jobs = check_jobs_status(optional_job_groups, is_mandatory=False)
+        # Check optional jobs status
+        all_optional_successful, optional_responses, failed_optional_jobs, yet_to_trigger_optional_jobs = check_optional_jobs_status(optional_job_groups)
         print("Optional jobs:", optional_responses)
 
         response = {
@@ -201,51 +201,44 @@ def lambda_handler(event, context):
         }
 
         current_time = datetime.utcnow()
-        cut_off_time_str = optional_job_groups.get('CUT_OFF_TIME')
-        cut_off_time = datetime.strptime(cut_off_time_str.replace('ZUTC', ''), '%H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
+        mandatory_cut_off_time_dt = datetime.strptime(mandatory_cut_off_time.replace('ZUTC', ''), '%H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
+        optional_cut_off_time_dt = datetime.strptime(optional_cut_off_time.replace('ZUTC', ''), '%H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
 
         if all_mandatory_successful:
-            if current_time.time() < cut_off_time.time():
+            if current_time.time() < optional_cut_off_time_dt.time():
                 if all_optional_successful:
                     response["status"] = "completed"
                     response["message"] = "All mandatory and optional jobs are successful."
-                    step_function_response = trigger_step_function(context)
+                    step_function_response = trigger_step_function(environment, 'publisher_job_name')
                     response["step_function"] = {
                         "status": "triggered",
-                        "executionArn": step_function_response["executionArn"]
+                        "executionArn": step_function_response['executionArn']
                     }
-                    cleanup_cloudwatch_rule(cloudwatch)
                 else:
-                    response["status"] = "pending"
-                    response["message"] = "All mandatory jobs are successful, but some optional jobs are still pending."
+                    response["status"] = "waiting"
+                    response["message"] = "Waiting for optional jobs to complete."
                     reschedule_lambda(context.invoked_function_arn, cloudwatch, lambda_client, region)
             else:
                 response["status"] = "completed"
-                response["message"] = "All mandatory jobs are successful. Cut-off time reached, triggering step function."
-                step_function_response = trigger_step_function(context)
+                response["message"] = "Mandatory jobs are successful. Optional jobs have either succeeded or timed out."
+                step_function_response = trigger_step_function(environment, 'publisher_job_name')
                 response["step_function"] = {
                     "status": "triggered",
-                    "executionArn": step_function_response["executionArn"]
+                    "executionArn": step_function_response['executionArn']
                 }
-                cleanup_cloudwatch_rule(cloudwatch)
         else:
-            if current_time.time() < cut_off_time.time():
-                response["status"] = "pending"
-                response["message"] = "Waiting for all mandatory jobs to succeed before the cut-off time."
+            if current_time.time() < mandatory_cut_off_time_dt.time():
+                response["status"] = "waiting"
+                response["message"] = "Waiting for mandatory jobs to complete."
                 reschedule_lambda(context.invoked_function_arn, cloudwatch, lambda_client, region)
             else:
-                response["status"] = "fail"
-                response["message"] = "Some mandatory jobs failed or were not completed before the cut-off time."
+                response["status"] = "failed"
+                response["message"] = "Mandatory jobs failed or timed out."
                 cleanup_cloudwatch_rule(cloudwatch)
 
-        return {
-            'statusCode': 200,
-            'body': json.dumps(response)
-        }
+        return response
+        
     except Exception as e:
-        print(e)
-        return {
-            'statusCode': 500,
-            'body': str(e)
-        }
-       
+        print(f"Error: {str(e)}")
+        cleanup_cloudwatch_rule(cloudwatch)
+        raise e
