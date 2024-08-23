@@ -74,6 +74,7 @@ def test_lambda_handler_all_successful(mock_cleanup, mock_reschedule, mock_trigg
     assert response["mandatory_jobs_status"]["all_successful"] is True
     assert response["optional_jobs_status"]["all_successful"] is True
     assert response["status"] == "completed"
+    assert "step_function" in response
 
 # Test case when mandatory jobs are yet to trigger
 @pytest.fixture
