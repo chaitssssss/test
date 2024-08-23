@@ -23,11 +23,15 @@ def check_mandatory_jobs_status(mandatory_job_groups, cut_off_time_str):
                 all_successful = False
                 failed_jobs.append(job_id)
         else:
-            if len(response['Items']) == 0 or response['Items'][0]['job_status'] != 'SUCCEEDED':
+            if len(response['Items']) == 0:
+                yet_to_trigger_jobs.append(job_id)  # Add to yet_to_trigger_jobs if no entries
+                all_successful = False
+            elif response['Items'][0]['job_status'] != 'SUCCEEDED':
                 all_successful = False
                 failed_jobs.append(job_id)
 
     return all_successful, responses, failed_jobs, yet_to_trigger_jobs
+
 
 # Check the status of optional job groups
 def check_optional_jobs_status(optional_job_groups):
@@ -54,8 +58,10 @@ def check_optional_jobs_status(optional_job_groups):
                 all_successful = False
                 failed_jobs.append(job_id)
         else:
-            if len(response['Items']) == 0 or response['Items'][0]['job_status'] != 'SUCCEEDED':
+             if len(response['Items']) == 0:
+                yet_to_trigger_jobs.append(job_id)  # Add to yet_to_trigger_jobs if no entries
+                all_successful = False
+            elif response['Items'][0]['job_status'] != 'SUCCEEDED':
                 all_successful = False
                 failed_jobs.append(job_id)
-
     return all_successful, responses, failed_jobs, yet_to_trigger_jobs
